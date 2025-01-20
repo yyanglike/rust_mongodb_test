@@ -200,7 +200,7 @@ impl JsonTreeManager {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     // 初始化 JsonTreeManager
-    let manager = JsonTreeManager::new("mongodb://localhost:27017", "json_tree_db", "json_tree_collection").await?;
+    let manager = JsonTreeManager::new("mongodb://Admin:Password@192.168.1.23:27017/json_tree_db?authSource=admin&tls=false", "json_tree_db", "json_tree_collection").await?;
 
     // 定义多组 JSON 数据
     let json_data_list: Vec<serde_json::Value> = vec![
