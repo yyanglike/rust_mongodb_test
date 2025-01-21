@@ -413,40 +413,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }),
         serde_json::json!({
-            "user": {
-                "name": "Emily",
-                "active": false,
-                "address": {
-                    "street": "456 Elm St",
-                    "city": "Los Angeles",
-                    "location": {
-                        "coordinates": {
-                            "latitude": 34.0522,
-                            "longitude": -118.2437
-                        }
-                    },
-                    "tags": ["work", "secondary"]
-                }
-            }
-        }),
-        serde_json::json!({
-            "user": {
-                "name": "Michael",
-                "active": true,
-                "address": {
-                    "street": "789 Oak St",
-                    "city": "Chicago",
-                    "location": {
-                        "coordinates": {
-                            "latitude": 41.8781,
-                            "longitude": -87.6298
-                        }
-                    },
-                    "tags": ["home", "primary"]
-                }
-            }
-        }),
-        serde_json::json!({
             "customer": {
                 "first_name": "Alice",
                 "last_name": "Smith",

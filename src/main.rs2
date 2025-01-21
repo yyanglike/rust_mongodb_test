@@ -1,0 +1,188 @@
+use rusqlite::{params, Connection, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use chrono::Utc;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct JsonNode {
+    id: Option<i64>,
+    path: String,
+    key: String,
+    value: Option<String>,
+    is_object: bool,
+    parent_id: Option<i64>,
+    timestamp: i64,
+}
+
+struct JsonStore {
+    conn: Connection,
+}
+
+impl JsonStore {
+    fn new(db_path: &str) -> Result<Self> {
+        let conn = Connection::open(db_path)?;
+        
+        // Create table if not exists
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS json_nodes (
+                id INTEGER PRIMARY KEY,
+                path TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT,
+                is_object BOOLEAN NOT NULL,
+                parent_id INTEGER,
+                timestamp INTEGER NOT NULL
+            )",
+            [],
+        )?;
+
+        Ok(Self { conn })
+    }
+
+    fn insert_node(&self, node: &JsonNode) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO json_nodes (path, key, value, is_object, parent_id, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                &node.path,
+                &node.key,
+                &node.value,
+                node.is_object,
+                node.parent_id,
+                node.timestamp
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn store_json(&self, json: &Value, parent_id: Option<i64>, path: &str) -> Result<()> {
+        // Clear existing data
+        if parent_id.is_none() {
+            self.conn.execute("DELETE FROM json_nodes", [])?;
+        }
+        
+        if let Some(obj) = json.as_object() {
+            for (key, value) in obj {
+                let full_path = if path.is_empty() {
+                    key.to_string()
+                } else {
+                    format!("{}.{}", path, key)
+                };
+
+                let is_object = value.is_object();
+                let node = JsonNode {
+                    id: None,
+                    path: full_path.clone(),
+                    key: key.to_string(),
+                    value: if is_object {
+                        None
+                    } else {
+                        Some(value.to_string().trim_matches('"').to_string())
+                    },
+                    is_object,
+                    parent_id,
+                    timestamp: Utc::now().timestamp(),
+                };
+
+                self.insert_node(&node)?;
+                
+                if is_object {
+                    let last_id = self.conn.last_insert_rowid();
+                    self.store_json(value, Some(last_id), &full_path)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn query_json(&self, path: &str) -> Result<Value> {
+        let query_path = if path.is_empty() { 
+            String::new() 
+        } else { 
+            format!("{}.", path) 
+        };
+        let mut stmt = self.conn.prepare(
+            "SELECT key, value, is_object FROM json_nodes WHERE path LIKE ?1 || '%' AND path NOT LIKE ?1 || '%.%'"
+        )?;
+        
+        let mut map = serde_json::Map::new();
+        let rows = stmt.query_map(params![&query_path], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
+        })?;
+
+        for row in rows {
+            let (key, value, is_object) = row?;
+            if is_object {
+                let child_path = if path.is_empty() {
+                    key.to_string()
+                } else {
+                    format!("{}.{}", path, key)
+                };
+                let child_value = self.query_json(&child_path)?;
+                map.insert(key, child_value);
+            } else if let Some(v) = value {
+                if let Ok(parsed) = serde_json::from_str::<Value>(&v) {
+                    map.insert(key, parsed);
+                } else {
+                    map.insert(key, Value::String(v));
+                }
+            }
+        }
+
+        Ok(Value::Object(map))
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let store = JsonStore::new("data.db")?;
+
+    // Example JSON
+    let json = serde_json::json!({
+        "user": {
+            "name": "John",
+            "address": {
+                "street": "123 Main St",
+                "city": "New York"
+            }
+        },
+        "age": 30
+    });
+
+    // Store JSON
+    store.store_json(&json, None, "")?;
+    println!("JSON data stored successfully");
+
+    // Query JSON
+    let result = store.query_json("user")?;
+    match serde_json::to_string_pretty(&result) {
+        Ok(json_str) => println!("Queried JSON: {}", json_str),
+        Err(e) => eprintln!("Error formatting JSON: {}", e),
+    }
+
+    // Debug: Print all stored nodes
+    let mut stmt = store.conn.prepare("SELECT * FROM json_nodes")?;
+    let nodes = stmt.query_map([], |row| {
+        Ok(JsonNode {
+            id: row.get(0)?,
+            path: row.get(1)?,
+            key: row.get(2)?,
+            value: row.get(3)?,
+            is_object: row.get(4)?,
+            parent_id: row.get(5)?,
+            timestamp: row.get(6)?,
+        })
+    })?;
+
+    println!("\nStored nodes:");
+    for node in nodes {
+        let node = node?;
+        println!("- Path: {}, Key: {}, Value: {:?}, IsObject: {}, ParentID: {:?}", 
+            node.path, node.key, node.value, node.is_object, node.parent_id);
+    }
+
+    Ok(())
+}

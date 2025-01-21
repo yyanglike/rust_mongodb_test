@@ -1,12 +1,14 @@
 [package]
-name = "mongodb_test"
+name = "json_sqlite"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-mongodb = "3.2.0"
+actix-web = "4.0.1"
+actix-rt = "2.0.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-futures = { version = "0.3", features = ["compat"] }
-async-recursion = "1.1.1"
-tokio = { version = "1", features = ["full"] }
+rusqlite = "0.29.0"
+chrono = "0.4"
+tokio = { version = "1.0", features = ["full"] }
+futures = "0.3"
