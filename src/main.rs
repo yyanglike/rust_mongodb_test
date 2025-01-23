@@ -154,47 +154,20 @@ impl JsonStore {
                 }
             }
             
-            // Check if record exists
-            let exists: i64 = self.conn.query_row(
-                &format!("SELECT COUNT(*) FROM {} WHERE id = ?", current_table_name),
-                [1], // Using id=1 since we're only storing one record per table
-                |row| row.get(0),
+            // Always insert new record with auto-incrementing id
+            let placeholders = columns.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let mut stmt = self.conn.prepare(
+                &format!(
+                    "INSERT INTO {} (timestamp, {}) VALUES (?, {})",
+                    current_table_name,
+                    columns.join(", "),
+                    placeholders
+                )
             )?;
-
-            if exists > 0 {
-                // Update existing record
-                let updates = columns.iter()
-                    .map(|col| format!("{} = ?", col))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                
-                let mut stmt = self.conn.prepare(
-                    &format!(
-                        "UPDATE {} SET timestamp = ?, {} WHERE id = 1",
-                        current_table_name,
-                        updates
-                    )
-                )?;
-                
-                let mut params = vec![Utc::now().timestamp().to_string()];
-                params.extend(values.clone());
-                stmt.execute(rusqlite::params_from_iter(params.iter()))?;
-            } else {
-                // Insert new record
-                let placeholders = columns.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-                let mut stmt = self.conn.prepare(
-                    &format!(
-                        "INSERT INTO {} (id, timestamp, {}) VALUES (1, ?, {})",
-                        current_table_name,
-                        columns.join(", "),
-                        placeholders
-                    )
-                )?;
-                
-                let mut params = vec![Utc::now().timestamp().to_string()];
-                params.extend(values.clone());
-                stmt.execute(rusqlite::params_from_iter(params.iter()))?;
-            }
+            
+            let mut params = vec![Utc::now().timestamp().to_string()];
+            params.extend(values.clone());
+            stmt.execute(rusqlite::params_from_iter(params.iter()))?;
             
             Ok(())
         } else {
@@ -221,7 +194,6 @@ impl JsonStore {
         Ok(())
     }
 
-
     fn get_child_tables(&self, table_name: &str) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ? || '_%'"
@@ -234,6 +206,37 @@ impl JsonStore {
         .collect::<Vec<_>>();
         
         Ok(child_tables)
+    }
+
+    fn get_all_data(&self) -> Result<Value> {
+        let mut result = serde_json::Map::new();
+        
+        // Get all tables
+        let mut stmt = self.conn.prepare(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )?;
+        
+        let tables = stmt.query_map([], |row| {
+            Ok(row.get::<_, String>(0)?)
+        })?
+        .filter_map(|t| t.ok())
+        .collect::<Vec<_>>();
+
+        for table in tables {
+            if table == "root" {
+                continue;
+            }
+            
+            // Query latest data for each table
+            let data = self.query_json(&table)?;
+            if let Value::Object(obj) = data {
+                if !obj.is_empty() {
+                    result.insert(table, Value::Object(obj));
+                }
+            }
+        }
+        
+        Ok(Value::Object(result))
     }
 
     fn query_json(&self, table_name: &str) -> Result<Value> {
@@ -297,9 +300,26 @@ impl JsonStore {
         Ok(Value::Object(map))
     }
 
-    /// Query JSON documents by key-value pair
     fn query_by_key_value(&self, search_key: &str, search_value: &str) -> Result<Vec<Value>> {
-        // Get all tables that might contain the key
+        println!("Entering query_by_key_value with key: '{}', value: '{}'", search_key, search_value);
+        
+        // If both key and value are empty, return empty result
+        if search_key.trim().is_empty() && search_value.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Validate key and value
+        if search_key.trim().is_empty() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        
+        if search_value.trim().is_empty() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+
+        let mut results = Vec::new();
+        
+        // Get all tables that contain the search key
         let mut stmt = self.conn.prepare(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )?;
@@ -310,8 +330,6 @@ impl JsonStore {
         .filter_map(|t| t.ok())
         .collect::<Vec<_>>();
 
-        let mut results = Vec::new();
-        
         for table in tables {
             // Check if table has the search key
             let mut stmt = self.conn.prepare(
@@ -337,21 +355,18 @@ impl JsonStore {
                 .filter(|c| c != "id" && c != "timestamp")
                 .collect::<Vec<_>>();
 
-                // Build query to get latest version of matching records
+                // Build query
                 let query = format!(
-                    "SELECT {} FROM {} WHERE {} = ? AND timestamp = (
-                        SELECT MAX(timestamp) FROM {} WHERE {} = ?
-                    )",
+                    "SELECT {} FROM {} WHERE {} = ? ORDER BY timestamp DESC",
                     columns.join(", "),
-                    table,
-                    search_key,
                     table,
                     search_key
                 );
-                
+
                 let mut stmt = self.conn.prepare(&query)?;
-                let rows = stmt.query_map([search_value, search_value], |row| {
-                    // Reconstruct JSON from row
+                
+                // Define closure for processing rows
+                let process_row = |row: &rusqlite::Row| -> Result<Value, rusqlite::Error> {
                     let mut map = serde_json::Map::new();
                     
                     for (i, col) in columns.iter().enumerate() {
@@ -376,7 +391,10 @@ impl JsonStore {
                     }
                     
                     Ok(Value::Object(map))
-                })?;
+                };
+
+                // Execute query
+                let rows = stmt.query_map(rusqlite::params![search_value], process_row)?;
                 
                 for row in rows {
                     if let Ok(json) = row {
@@ -403,8 +421,16 @@ async fn store_json(
 ) -> impl actix_web::Responder {
     let store = data.store.lock().unwrap();
     match store.store_json(&json, None) {
-        Ok(_) => actix_web::HttpResponse::Ok().body("Document stored successfully"),
-        Err(e) => actix_web::HttpResponse::InternalServerError().body(format!("Error: {}", e)),
+        Ok(_) => actix_web::HttpResponse::Ok().json(serde_json::json!({
+            "status": "success",
+            "message": "Document stored successfully",
+            "timestamp": Utc::now().timestamp()
+        })),
+        Err(e) => actix_web::HttpResponse::InternalServerError().json(serde_json::json!({
+            "status": "error",
+            "message": format!("Error: {}", e),
+            "timestamp": Utc::now().timestamp()
+        })),
     }
 }
 
@@ -412,11 +438,44 @@ async fn query_by_key_value(
     data: web::Data<AppState>,
     path: web::Path<(String, String)>,
 ) -> impl actix_web::Responder {
+    println!("HTTP request received for query_by_key_value");
     let (key, value) = path.into_inner();
+    println!("Parsed key: '{}', value: '{}'", key, value);
+    
+    // If both key and value are empty, return empty result
+    if key.trim().is_empty() && value.trim().is_empty() {
+        return actix_web::HttpResponse::Ok().json(serde_json::json!({
+            "status": "success",
+            "data": [],
+            "timestamp": Utc::now().timestamp()
+        }));
+    }
+
+    // Validate key and value
+    if key.trim().is_empty() {
+        return actix_web::HttpResponse::BadRequest().json(serde_json::json!({
+            "status": "error",
+            "message": "Key cannot be empty",
+            "timestamp": Utc::now().timestamp()
+        }));
+    }
+    
+    if value.trim().is_empty() {
+        return actix_web::HttpResponse::BadRequest().json(serde_json::json!({
+            "status": "error", 
+            "message": "Value cannot be empty",
+            "timestamp": Utc::now().timestamp()
+        }));
+    }
+
     let store = data.store.lock().unwrap();
     match store.query_by_key_value(&key, &value) {
         Ok(results) => actix_web::HttpResponse::Ok().json(results),
-        Err(e) => actix_web::HttpResponse::InternalServerError().body(format!("Error: {}", e)),
+        Err(e) => actix_web::HttpResponse::InternalServerError().json(serde_json::json!({
+            "status": "error",
+            "message": format!("Error: {}", e),
+            "timestamp": Utc::now().timestamp()
+        })),
     }
 }
 
@@ -432,6 +491,18 @@ async fn main() -> std::io::Result<()> {
             .app_data(app_state.clone())
             .route("/store", web::post().to(store_json))
             .route("/query/{key}/{value}", web::get().to(query_by_key_value))
+            .route("/query", web::get().to(|data: web::Data<AppState>| async move {
+                println!("Received query request without parameters");
+                let store = data.store.lock().unwrap();
+                match store.get_all_data() {
+                    Ok(data) => actix_web::HttpResponse::Ok().json(data),
+                    Err(e) => actix_web::HttpResponse::InternalServerError().json(serde_json::json!({
+                        "status": "error",
+                        "message": format!("Error: {}", e),
+                        "timestamp": Utc::now().timestamp()
+                    })),
+                }
+            }))
     })
     .bind("127.0.0.1:8080")?
     .run()

@@ -7,44 +7,41 @@ description = "A JSON storage system using SQLite"
 license = "MIT"
 repository = "https://github.com/yourusername/json-sqlite"
 
-[features]
-default = ["web"]
-web = ["actix-web", "tokio/full"]
-cli = ["clap", "tokio/full"]
-full = ["web", "cli"]
-
 [dependencies]
-rusqlite = { version = "0.29.0", features = ["bundled"] }
+rusqlite = { version = "0.31.0", features = ["bundled"] }  # 更新到最新稳定版
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-actix-web = { version = "4.0.1", optional = true }
-actix-rt = "2.0.0"
-tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros"], optional = true }
-tracing = { version = "0.1", optional = true }
-tracing-subscriber = { version = "0.3", optional = true }
-
-# CLI dependencies
-clap = { version = "4.0", features = ["derive"], optional = true }
+actix-web = { version = "4.4.0", default-features = false, features = ["macros"] }  # 更新并优化features
+tokio = { version = "1.37.0", features = ["rt", "rt-multi-thread", "macros"] }  # 更新到最新稳定版
+tracing = { version = "0.1", optional = true }  # 设为可选
+tracing-subscriber = { version = "0.3", optional = true }  # 设为可选
+clap = { version = "4.5.0", features = ["derive"] }  # 更新到最新稳定版
 
 [dev-dependencies]
-tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "test-util"] }
-actix-rt = "2.0.0"
 actix-test = "0.1.0"
-tempfile = "3.8.1"
-insta = "1.0" # For snapshot testing
-criterion = "0.4" # For benchmarking
+tempfile = "3.10.0"  # 更新到最新稳定版
+insta = "1.38.0"  # 更新到最新稳定版
+criterion = "0.5.1"  # 更新到最新稳定版
 
-[build-dependencies]
-vergen = "7.0" # For build-time version information
+[features]
+default = []
+logging = ["tracing", "tracing-subscriber"]  # 添加可选日志功能
 
 [profile.dev]
-opt-level = 0
+opt-level = 1
 incremental = true
-codegen-units = 16
+codegen-units = 32  # 增加并行编译单元
 lto = "off"
 split-debuginfo = "unpacked"
-build-override = { incremental = true }
+debug = 1  # 保留调试信息
+overflow-checks = false  # 禁用溢出检查以加快速度
+panic = "abort"  # 使用abort而不是unwind
+build-override = { opt-level = 0 }  # 构建依赖时使用最低优化
+
+# 添加构建缓存配置
+[build]
+rustc-wrapper = "sccache"
 
 [profile.release]
 opt-level = 3

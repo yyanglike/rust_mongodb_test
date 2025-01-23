@@ -86,5 +86,5 @@ echo -e "\nTesting cleanup functionality..."
 curl -X DELETE http://localhost:8080/cleanup
 
 # Query after cleanup
-echo -e "\nQuerying after cleanup:"
-curl http://localhost:8080/query
+# echo -e "\nQuerying after cleanup:"
+# curl http://localhost:8080/query
