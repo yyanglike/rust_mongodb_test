@@ -390,50 +390,187 @@ impl JsonStore {
     }
 }
 
-use actix_web::{web, App, HttpServer};
-use std::sync::Mutex;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let store = JsonStore::new("data.db")?;
 
-struct AppState {
-    store: Mutex<JsonStore>,
-}
+    // Store multiple JSON documents with different structures
+    let users = vec![
+        serde_json::json!({
+            "user": {
+                "name": "John",
+                "active": true,
+                "address": {
+                    "street": "123 Main St",
+                    "city": "New York",
+                    "location": {
+                        "coordinates": {
+                            "latitude": 40.7128,
+                            "longitude": -74.0060
+                        }
+                    },
+                    "tags": ["home", "primary"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "user": {
+                "name": "Emily",
+                "active": false,
+                "address": {
+                    "street": "456 Elm St",
+                    "city": "Los Angeles",
+                    "location": {
+                        "coordinates": {
+                            "latitude": 34.0522,
+                            "longitude": -118.2437
+                        }
+                    },
+                    "tags": ["work", "secondary"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "user": {
+                "name": "Michael",
+                "active": true,
+                "address": {
+                    "street": "789 Oak St",
+                    "city": "Chicago",
+                    "location": {
+                        "coordinates": {
+                            "latitude": 41.8781,
+                            "longitude": -87.6298
+                        }
+                    },
+                    "tags": ["home", "primary"]
+                }
+            }
+        }),
+        serde_json::json!({
+            "customer": {
+                "first_name": "Alice",
+                "last_name": "Smith",
+                "status": "active",
+                "contact": {
+                    "email": "alice@example.com",
+                    "phone": "555-1234"
+                },
+                "preferences": {
+                    "newsletter": true,
+                    "notifications": {
+                        "email": true,
+                        "sms": false
+                    }
+                }
+            }
+        }),
+        serde_json::json!({
+            "employee": {
+                "id": 1001,
+                "name": "Bob Johnson",
+                "department": "Engineering",
+                "skills": ["Rust", "Python", "JavaScript"],
+                "manager": {
+                    "name": "Sarah Lee",
+                    "email": "sarah@company.com"
+                }
+            }
+        })
+    ];
 
-async fn store_json(
-    data: web::Data<AppState>,
-    json: web::Json<serde_json::Value>,
-) -> impl actix_web::Responder {
-    let store = data.store.lock().unwrap();
-    match store.store_json(&json, None) {
-        Ok(_) => actix_web::HttpResponse::Ok().body("Document stored successfully"),
-        Err(e) => actix_web::HttpResponse::InternalServerError().body(format!("Error: {}", e)),
+    for json in users {
+        println!("\nStoring document: {}", serde_json::to_string_pretty(&json)?);
+        match store.store_json(&json, None) {
+            Ok(_) => println!("Stored JSON document with top-level key: {}", json.as_object().unwrap().keys().next().unwrap()),
+            Err(e) => eprintln!("Error storing document: {}", e),
+        }
     }
-}
 
-async fn query_by_key_value(
-    data: web::Data<AppState>,
-    path: web::Path<(String, String)>,
-) -> impl actix_web::Responder {
-    let (key, value) = path.into_inner();
-    let store = data.store.lock().unwrap();
-    match store.query_by_key_value(&key, &value) {
-        Ok(results) => actix_web::HttpResponse::Ok().json(results),
-        Err(e) => actix_web::HttpResponse::InternalServerError().body(format!("Error: {}", e)),
+    // Test queries across different documents
+    println!("\nTesting queries across different documents:");
+    
+    // Query by name across all documents
+    println!("\nSearching for name 'John':");
+    let results = store.query_by_key_value("name", "John")?;
+    for (i, result) in results.iter().enumerate() {
+        println!("\nMatch {}:\n{}", i + 1, serde_json::to_string_pretty(result)?);
     }
-}
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    let store = JsonStore::new("data.db").unwrap();
-    let app_state = web::Data::new(AppState {
-        store: Mutex::new(store),
+    // Query by email across all documents
+    println!("\nSearching for email 'alice@example.com':");
+    let results = store.query_by_key_value("email", "alice@example.com")?;
+    for (i, result) in results.iter().enumerate() {
+        println!("\nMatch {}:\n{}", i + 1, serde_json::to_string_pretty(result)?);
+    }
+
+    // Query by department across all documents
+    println!("\nSearching for department 'Engineering':");
+    let results = store.query_by_key_value("department", "Engineering")?;
+    for (i, result) in results.iter().enumerate() {
+        println!("\nMatch {}:\n{}", i + 1, serde_json::to_string_pretty(result)?);
+    }
+
+    // Test cleanup functionality
+    println!("\nTesting cleanup functionality...");
+    
+    // Create test data with old timestamp using user's JSON structure
+    let old_timestamp = Utc::now().timestamp() - (30 * 24 * 60 * 60);
+    let user_json = serde_json::json!({
+        "user": {
+            "name": "John",
+            "active": true,
+            "address": {
+                "street": "123 Main St",
+                "city": "New York",
+                "location": {
+                    "coordinates": {
+                        "latitude": 40.7128,
+                        "longitude": -74.0060
+                    }
+                },
+                "tags": ["home", "primary"]
+            }
+        }
     });
+    
+    // Store with old timestamp
+    store.store_json(&user_json, None)?;
+    
+    // Manually update timestamp to be old
+    store.conn.execute(
+        "UPDATE root SET timestamp = ?",
+        [old_timestamp],
+    )?;
 
-    HttpServer::new(move || {
-        App::new()
-            .app_data(app_state.clone())
-            .route("/store", web::post().to(store_json))
-            .route("/query/{key}/{value}", web::get().to(query_by_key_value))
-    })
-    .bind("127.0.0.1:8080")?
-    .run()
-    .await
+  // Verify cleanup results
+    let count: i64 = store.conn
+        .query_row("SELECT COUNT(*) FROM root", [], |row| row.get(0))?;
+    println!("Rows in root table after cleanup: {}", count);
+
+    // Query child tables
+    let child_tables = store.get_child_tables("root")?;
+    for child_table in child_tables {
+        let count: i64 = store.conn
+            .query_row(&format!("SELECT COUNT(*) FROM {}", child_table), [], |row| row.get(0))?;
+        println!("Rows in '{}' table after cleanup: {}", child_table, count);
+    }
+
+    // Test query by key-value
+    println!("\nTesting query by key-value...");
+    let results = store.query_by_key_value("name", "John")?;
+    for (i, result) in results.iter().enumerate() {
+        println!("\nMatch {}:\n{}", i + 1, serde_json::to_string_pretty(result)?);
+    }
+
+    // Test query by nested key-value
+    println!("\nTesting query by nested key-value...");
+    let results = store.query_by_key_value("city", "New York")?;
+    for (i, result) in results.iter().enumerate() {
+        println!("\nMatch {}:\n{}", i + 1, serde_json::to_string_pretty(result)?);
+    }
+    // Clean up data older than 7 days
+    store.cleanup_old_data_with_age("root", 7)?;
+
+  
+    Ok(())
 }

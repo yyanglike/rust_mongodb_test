@@ -2,13 +2,53 @@
 name = "json_sqlite"
 version = "0.1.0"
 edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A JSON storage system using SQLite"
+license = "MIT"
+repository = "https://github.com/yourusername/json-sqlite"
+
+[features]
+default = ["web"]
+web = ["actix-web", "tokio/full"]
+cli = ["clap", "tokio/full"]
+full = ["web", "cli"]
 
 [dependencies]
-actix-web = "4.0.1"
-actix-rt = "2.0.0"
+rusqlite = { version = "0.29.0", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rusqlite = "0.29.0"
-chrono = "0.4"
-tokio = { version = "1.0", features = ["full"] }
-futures = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+actix-web = { version = "4.0.1", optional = true }
+actix-rt = "2.0.0"
+tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros"], optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", optional = true }
+
+# CLI dependencies
+clap = { version = "4.0", features = ["derive"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "test-util"] }
+actix-rt = "2.0.0"
+actix-test = "0.1.0"
+tempfile = "3.8.1"
+insta = "1.0" # For snapshot testing
+criterion = "0.4" # For benchmarking
+
+[build-dependencies]
+vergen = "7.0" # For build-time version information
+
+[profile.dev]
+opt-level = 0
+incremental = true
+codegen-units = 16
+lto = "off"
+split-debuginfo = "unpacked"
+build-override = { incremental = true }
+
+[profile.release]
+opt-level = 3
+incremental = true
+codegen-units = 1
+lto = "thin"
+panic = "abort"
