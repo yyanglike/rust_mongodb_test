@@ -1,51 +1,12 @@
 [package]
-name = "json_sqlite"
+name = "json_storage"
 version = "0.1.0"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
-description = "A JSON storage system using SQLite"
-license = "MIT"
-repository = "https://github.com/yourusername/json-sqlite"
 
 [dependencies]
-rusqlite = { version = "0.31.0", features = ["bundled"] }  # 更新到最新稳定版
+actix-web = "4.0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
-actix-web = { version = "4.4.0", default-features = false, features = ["macros"] }  # 更新并优化features
-tokio = { version = "1.37.0", features = ["rt", "rt-multi-thread", "macros"] }  # 更新到最新稳定版
-tracing = { version = "0.1", optional = true }  # 设为可选
-tracing-subscriber = { version = "0.3", optional = true }  # 设为可选
-clap = { version = "4.5.0", features = ["derive"] }  # 更新到最新稳定版
-
-[dev-dependencies]
-actix-test = "0.1.0"
-tempfile = "3.10.0"  # 更新到最新稳定版
-insta = "1.38.0"  # 更新到最新稳定版
-criterion = "0.5.1"  # 更新到最新稳定版
-
-[features]
-default = []
-logging = ["tracing", "tracing-subscriber"]  # 添加可选日志功能
-
-[profile.dev]
-opt-level = 1
-incremental = true
-codegen-units = 32  # 增加并行编译单元
-lto = "off"
-split-debuginfo = "unpacked"
-debug = 1  # 保留调试信息
-overflow-checks = false  # 禁用溢出检查以加快速度
-panic = "abort"  # 使用abort而不是unwind
-build-override = { opt-level = 0 }  # 构建依赖时使用最低优化
-
-# 添加构建缓存配置
-[build]
-rustc-wrapper = "sccache"
-
-[profile.release]
-opt-level = 3
-incremental = true
-codegen-units = 1
-lto = "thin"
-panic = "abort"
+sqlx = { version = "0.7", features = ["sqlite", "runtime-tokio-native-tls", "json"] }
+dotenv = "0.15"
+tokio = { version = "1", features = ["full"] }
