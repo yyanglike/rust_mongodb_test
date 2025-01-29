@@ -1,1 +1,6 @@
 /target
+json_storage/.DS_Store
+.gitignore
+.DS_Store
+.gitignore
+*.db
