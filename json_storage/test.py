@@ -10,6 +10,9 @@ COLUMN_SUFFIX = {
     "INDEX": "_ind"     # 索引后缀
 }
 
+import logging
+logger = logging.getLogger(__name__)
+
 class ColumnMappingManager:
     """列名映射管理器（持久化版）"""
     def __init__(self, conn: sqlite3.Connection):
@@ -122,7 +125,12 @@ def update_data(
         SET {set_clause}
         WHERE {where_clause}
     """
-    conn.execute(query, params)
+    try:
+        # 原有逻辑
+        conn.execute(query, params)
+    except sqlite3.Error as e:
+        logger.error(f"Update failed: {str(e)}")
+        raise    
 
 def delete_data(
     conn: sqlite3.Connection,
@@ -325,6 +333,10 @@ def main():
         insert_data(conn, table_name, flat)
         insert_data(conn, table_name, flat_2)
         
+        # 插入数据后，更新数据
+        update_data(conn, mapper, table_name, {"details/age_ind": 28}, "user_pri = 'U1'")
+        delete_data(conn, mapper, table_name, "user_pri = 'U2'")
+        
         # 测试分页查询
         print("-- 第1页数据 --")
         page_data = query_with_pagination(
@@ -339,6 +351,8 @@ def main():
         # 恢复数据并过滤null值
     restored_data = restore_data_with_filter(page_data)            
     print(json.dumps(restored_data, indent=2))
+    
+
 
 def table_exists(conn, table_name):
     """检查表是否存在"""
@@ -363,9 +377,10 @@ def create_table1(conn, table_name, columns, primary_keys, indexed_columns):
     
     # 创建索引
     for col in set(indexed_columns) - set(primary_keys):
-        conn.execute(f"CREATE INDEX idx_{table_name}_{col} ON {table_name}({col})")
+        # conn.execute(f"CREATE INDEX idx_{table_name}_{col} ON {table_name}({col})")
+        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_{col} ON {table_name}({col})")
         
-def create_table(conn, table_name, columns, primary_keys, indexed_columns):
+def create_table1(conn, table_name, columns, primary_keys, indexed_columns):
     """创建表结构"""
     # 列定义（处理主键）
     col_defs = []
@@ -387,11 +402,32 @@ def create_table(conn, table_name, columns, primary_keys, indexed_columns):
     
     # 创建索引
     for col in set(indexed_columns) - set(primary_keys):
+        # conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_{col} ON {table_name}({col})")
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_{col} ON {table_name}({col})")
         
-        
+def create_table(conn, table_name, columns, primary_keys, indexed_columns):
+    """统一表创建逻辑"""
+    # 列定义处理
+    col_defs = [
+        f"{col} TEXT{' PRIMARY KEY' if col in primary_keys else ''}"
+        for col in columns
+    ]
+    
+    # 表创建
+    conn.execute(f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            {', '.join(col_defs)}
+        )
+    """)
+    
+    # 索引处理
+    for col in set(indexed_columns) - set(primary_keys):
+        conn.execute(f"""
+            CREATE INDEX IF NOT EXISTS idx_{table_name}_{col} 
+            ON {table_name}({col})
+        """)        
 
-def insert_data(conn, table_name, data):
+def insert_data1(conn, table_name, data):
     """插入数据前，确保表包含所有需要的列"""
     # 获取表的所有列
     cursor = conn.execute(f"PRAGMA table_info({table_name})")
@@ -410,6 +446,37 @@ def insert_data(conn, table_name, data):
     placeholders = ', '.join(['?'] * len(data))
     query = f"INSERT OR REPLACE INTO {table_name} ({cols}) VALUES ({placeholders})"
     conn.execute(query, tuple(data.values()))
+    
+def insert_data(conn, table_name, data):
+    """优化后的插入逻辑"""
+    # 批量获取现有列
+    cursor = conn.execute(f"PRAGMA table_info({table_name})")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+    
+    # 批量添加缺失列
+    missing = [col for col in data.keys() if col not in existing_columns]
+    for col in missing:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {col} TEXT")
+    
+    # 执行插入
+    query = f"""
+        INSERT OR REPLACE INTO {table_name} 
+        ({', '.join(data.keys())}) 
+        VALUES ({', '.join(['?']*len(data))})
+    """
+    conn.execute(query, tuple(data.values()))    
+    
+def batch_insert_data(conn, table_name, data_list):
+    """批量插入优化"""
+    try:
+        conn.execute("BEGIN TRANSACTION")
+        for data in data_list:
+            insert_data(conn, table_name, data)
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise    
+    
     
 def restore_data_with_filter(data):
     """递归还原数据，并过滤掉值为null的键"""
