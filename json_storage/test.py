@@ -2,6 +2,11 @@ import sqlite3
 import json
 import hashlib
 from typing import Dict, List, Any, Tuple
+import logging
+
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # 系统配置
 MAPPING_TABLE = "__column_mappings__"
@@ -9,9 +14,6 @@ COLUMN_SUFFIX = {
     "PRIMARY": "_pri",  # 主键后缀
     "INDEX": "_ind"     # 索引后缀
 }
-
-import logging
-logger = logging.getLogger(__name__)
 
 class ColumnMappingManager:
     """列名映射管理器（持久化版）"""
@@ -99,50 +101,6 @@ def parse_condition(
     
     return ' AND '.join(parts), params
 
-def update_data(
-    conn: sqlite3.Connection,
-    mapper: ColumnMappingManager,
-    table_name: str,
-    data: Dict[str, Any],
-    where_condition: str
-) -> None:
-    """更新数据（安全参数化版本）"""
-    # 转换数据键名
-    hashed_data = {
-        hash_column_name(k, mapper): v 
-        for k, v in data.items()
-    }
-    
-    # 解析条件
-    where_clause, where_params = parse_condition(where_condition, mapper)
-    
-    # 构建SQL
-    set_clause = ', '.join([f"{k} = ?" for k in hashed_data])
-    params = list(hashed_data.values()) + where_params
-    
-    query = f"""
-        UPDATE {table_name}
-        SET {set_clause}
-        WHERE {where_clause}
-    """
-    try:
-        # 原有逻辑
-        conn.execute(query, params)
-    except sqlite3.Error as e:
-        logger.error(f"Update failed: {str(e)}")
-        raise    
-
-def delete_data(
-    conn: sqlite3.Connection,
-    mapper: ColumnMappingManager,
-    table_name: str,
-    where_condition: str
-) -> None:
-    """删除数据（安全参数化版本）"""
-    where_clause, params = parse_condition(where_condition, mapper)
-    query = f"DELETE FROM {table_name} WHERE {where_clause}"
-    conn.execute(query, params)
-
 def unflatten_json(flat_data: List[Dict[str, Any]], mapper: ColumnMappingManager, sep: str = '/') -> List[Dict[str, Any]]:
     """恢复扁平化的 JSON 数据"""
     def set_nested_item(d: Dict, keys: List[str], value: Any):
@@ -164,115 +122,6 @@ def unflatten_json(flat_data: List[Dict[str, Any]], mapper: ColumnMappingManager
         result.append(restored_item)
     return result
 
-def query_with_pagination1(
-    conn: sqlite3.Connection,
-    mapper: ColumnMappingManager,
-    table_name: str,
-    order_field: str,
-    order_dir: str,
-    page: int,
-    page_size: int
-) -> List[Dict[str, Any]]:
-    """分页查询数据"""
-    # 扁平化排序列名
-    hashed_order_field = hash_column_name(order_field, mapper)
-    
-    # 计算偏移量
-    offset = (page - 1) * page_size
-    
-    query = f"""
-        SELECT * FROM {table_name}
-        ORDER BY {hashed_order_field} {order_dir}
-        LIMIT ? OFFSET ?
-    """
-    cursor = conn.execute(query, (page_size, offset))
-    rows = cursor.fetchall()
-
-    # 恢复为JSON格式
-    column_names = [description[0] for description in cursor.description]
-    flat_data = [{col: row[i] for i, col in enumerate(column_names)} for row in rows]
-    return unflatten_json(flat_data, mapper)
-
-def query_with_pagination(
-    conn: sqlite3.Connection,
-    mapper: ColumnMappingManager,
-    table_name: str,
-    order_field: str,
-    order_dir: str,
-    page: int,
-    page_size: int
-) -> List[Dict[str, Any]]:
-    """分页查询数据"""
-    # 扁平化排序列名
-    hashed_order_field = hash_column_name(order_field, mapper)
-    
-    # 计算偏移量
-    offset = (page - 1) * page_size
-    
-    # 使用 COALESCE 处理缺失的字段
-    query = f"""
-        SELECT * FROM {table_name}
-        ORDER BY COALESCE({hashed_order_field}, 0) {order_dir}
-        LIMIT ? OFFSET ?
-    """
-    cursor = conn.execute(query, (page_size, offset))
-    rows = cursor.fetchall()
-
-    # 恢复为JSON格式
-    column_names = [description[0] for description in cursor.description]
-    flat_data = [{col: row[i] for i, col in enumerate(column_names)} for row in rows]
-    return unflatten_json(flat_data, mapper)
-
-# 这个的效率可能低一些，暂时不用了。
-# def query_with_pagination(
-#     conn: sqlite3.Connection,
-#     mapper: ColumnMappingManager,
-#     table_name: str,
-#     order_field: str,
-#     order_dir: str,
-#     page: int,
-#     page_size: int,
-#     filters: Dict[str, Any] = None  # 可以传入额外的过滤条件
-# ) -> List[Dict[str, Any]]:
-#     """分页查询数据，跳过NULL值的列"""
-#     # 处理排序字段
-#     hashed_order_field = hash_column_name(order_field, mapper)
-    
-#     # 计算偏移量
-#     offset = (page - 1) * page_size
-
-#     # 生成查询条件
-#     where_clause = ""
-#     params = []
-    
-#     if filters:
-#         conditions = []
-#         for key, value in filters.items():
-#             if value is not None:  # 过滤掉NULL值的字段
-#                 hashed_key = hash_column_name(key, mapper)
-#                 conditions.append(f"{hashed_key} = ?")
-#                 params.append(value)
-#         if conditions:
-#             where_clause = "WHERE " + " AND ".join(conditions)
-
-#     # 构建SQL查询语句
-#     query = f"""
-#         SELECT * FROM {table_name}
-#         {where_clause}
-#         ORDER BY {hashed_order_field} {order_dir}
-#         LIMIT ? OFFSET ?
-#     """
-#     cursor = conn.execute(query, params + [page_size, offset])
-#     rows = cursor.fetchall()
-
-#     # 恢复为JSON格式
-#     column_names = [description[0] for description in cursor.description]
-#     flat_data = [{col: row[i] for i, col in enumerate(column_names)} for row in rows]
-    
-#     return unflatten_json(flat_data, mapper)
-
-
-
 class DatabaseManager:
     """数据库上下文管理器（集成映射）"""
     def __init__(self, db_name: str):
@@ -289,6 +138,161 @@ class DatabaseManager:
         else:
             self.conn.rollback()
         self.conn.close()
+
+class DatabaseOperations:
+    """数据库操作类，封装常用操作"""
+    @staticmethod
+    def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+        """检查表是否存在"""
+        cursor = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,)
+        )
+        return cursor.fetchone() is not None
+
+    @staticmethod
+    def create_table(conn: sqlite3.Connection, table_name: str, columns: List[str], primary_keys: List[str], indexed_columns: List[str]):
+        """统一表创建逻辑"""
+        # 列定义处理
+        col_defs = [
+            f"{col} TEXT{' PRIMARY KEY' if col in primary_keys else ''}"
+            for col in columns
+        ]
+        
+        # 表创建
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                {', '.join(col_defs)}
+            )
+        """)
+        
+        # 索引处理
+        for col in set(indexed_columns) - set(primary_keys):
+            conn.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_{table_name}_{col} 
+                ON {table_name}({col})
+            """)
+
+    @staticmethod
+    def insert_data(conn: sqlite3.Connection, table_name: str, data: Dict[str, Any]):
+        """优化后的插入逻辑"""
+        try:
+            # 批量获取现有列
+            cursor = conn.execute(f"PRAGMA table_info({table_name})")
+            existing_columns = {row[1] for row in cursor.fetchall()}
+            
+            # 批量添加缺失列
+            missing = [col for col in data.keys() if col not in existing_columns]
+            for col in missing:
+                conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {col} TEXT")
+            
+            # 执行插入
+            query = f"""
+                INSERT OR REPLACE INTO {table_name} 
+                ({', '.join(data.keys())}) 
+                VALUES ({', '.join(['?']*len(data))})
+            """
+            conn.execute(query, tuple(data.values()))
+        except sqlite3.Error as e:
+            logger.error(f"Insert failed: {str(e)}")
+            raise
+
+    @staticmethod
+    def batch_insert_data(conn: sqlite3.Connection, table_name: str, data_list: List[Dict[str, Any]]):
+        """批量插入优化"""
+        try:
+            conn.execute("BEGIN TRANSACTION")
+            for data in data_list:
+                DatabaseOperations.insert_data(conn, table_name, data)
+            conn.commit()
+        except sqlite3.Error as e:
+            conn.rollback()
+            logger.error(f"Batch insert failed: {str(e)}")
+            raise
+
+    @staticmethod
+    def update_data(
+        conn: sqlite3.Connection,
+        mapper: ColumnMappingManager,
+        table_name: str,
+        data: Dict[str, Any],
+        where_condition: str
+    ) -> None:
+        """更新数据（安全参数化版本）"""
+        # 转换数据键名
+        hashed_data = {
+            hash_column_name(k, mapper): v 
+            for k, v in data.items()
+        }
+        
+        # 解析条件
+        where_clause, where_params = parse_condition(where_condition, mapper)
+        
+        # 构建SQL
+        set_clause = ', '.join([f"{k} = ?" for k in hashed_data])
+        params = list(hashed_data.values()) + where_params
+        
+        query = f"""
+            UPDATE {table_name}
+            SET {set_clause}
+            WHERE {where_clause}
+        """
+        try:
+            conn.execute(query, params)
+        except sqlite3.Error as e:
+            logger.error(f"Update failed: {str(e)}")
+            raise    
+
+    @staticmethod
+    def delete_data(conn: sqlite3.Connection, mapper: ColumnMappingManager, table_name: str, where_condition: str) -> None:
+        """删除数据（安全参数化版本）"""
+        where_clause, params = parse_condition(where_condition, mapper)
+        query = f"DELETE FROM {table_name} WHERE {where_clause}"
+        conn.execute(query, params)
+
+    @staticmethod
+    def query_with_pagination(
+        conn: sqlite3.Connection,
+        mapper: ColumnMappingManager,
+        table_name: str,
+        order_field: str,
+        order_dir: str,
+        page: int,
+        page_size: int
+    ) -> List[Dict[str, Any]]:
+        """分页查询数据"""
+        # 扁平化排序列名
+        hashed_order_field = hash_column_name(order_field, mapper)
+        
+        # 计算偏移量
+        offset = (page - 1) * page_size
+        
+        # 使用 COALESCE 处理缺失的字段
+        query = f"""
+            SELECT * FROM {table_name}
+            ORDER BY COALESCE({hashed_order_field}, 0) {order_dir}
+            LIMIT ? OFFSET ?
+        """
+        cursor = conn.execute(query, (page_size, offset))
+        rows = cursor.fetchall()
+
+        # 恢复为JSON格式
+        column_names = [description[0] for description in cursor.description]
+        flat_data = [{col: row[i] for i, col in enumerate(column_names)} for row in rows]
+        return unflatten_json(flat_data, mapper)
+
+    @staticmethod
+    def restore_data_with_filter(data: Any) -> Any:
+        """递归还原数据，并过滤掉值为null的键"""
+        if isinstance(data, dict):
+            # 遍历字典并过滤掉值为null的字段
+            return {k: DatabaseOperations.restore_data_with_filter(v) for k, v in data.items() if v is not None}
+        elif isinstance(data, list):
+            # 对列表进行递归处理
+            return [DatabaseOperations.restore_data_with_filter(item) for item in data]
+        else:
+            # 其他类型的数据直接返回
+            return data
 
 # 使用示例
 def main():
@@ -326,20 +330,20 @@ def main():
         
         # 创建表
         table_name = "user_data"
-        if not table_exists(conn, table_name):
-            create_table(conn, table_name, flat.keys(), primary_keys, indexed_columns)
+        if not DatabaseOperations.table_exists(conn, table_name):
+            DatabaseOperations.create_table(conn, table_name, flat.keys(), primary_keys, indexed_columns)
             
         # 插入数据
-        insert_data(conn, table_name, flat)
-        insert_data(conn, table_name, flat_2)
+        DatabaseOperations.insert_data(conn, table_name, flat)
+        DatabaseOperations.insert_data(conn, table_name, flat_2)
         
         # 插入数据后，更新数据
-        update_data(conn, mapper, table_name, {"details/age_ind": 28}, "user_pri = 'U1'")
-        delete_data(conn, mapper, table_name, "user_pri = 'U2'")
+        DatabaseOperations.update_data(conn, mapper, table_name, {"details/age_ind": 28}, "user_pri = 'U1'")
+        DatabaseOperations.delete_data(conn, mapper, table_name, "user_pri = 'U2'")
         
         # 测试分页查询
         print("-- 第1页数据 --")
-        page_data = query_with_pagination(
+        page_data = DatabaseOperations.query_with_pagination(
             conn, mapper,
             table_name=table_name,
             order_field="details/age_ind",
@@ -349,147 +353,8 @@ def main():
         )
         
         # 恢复数据并过滤null值
-    restored_data = restore_data_with_filter(page_data)            
-    print(json.dumps(restored_data, indent=2))
-    
-
-
-def table_exists(conn, table_name):
-    """检查表是否存在"""
-    cursor = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (table_name,)
-    )
-    return cursor.fetchone() is not None
-
-def create_table1(conn, table_name, columns, primary_keys, indexed_columns):
-    """创建表结构"""
-    # 列定义（处理主键）
-    col_defs = []
-    for col in columns:
-        if col in primary_keys:
-            col_defs.append(f"{col} TEXT PRIMARY KEY")
-        else:
-            col_defs.append(f"{col} TEXT")
-    
-    # 创建表
-    conn.execute(f"CREATE TABLE {table_name} ({', '.join(col_defs)})")
-    
-    # 创建索引
-    for col in set(indexed_columns) - set(primary_keys):
-        # conn.execute(f"CREATE INDEX idx_{table_name}_{col} ON {table_name}({col})")
-        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_{col} ON {table_name}({col})")
-        
-def create_table1(conn, table_name, columns, primary_keys, indexed_columns):
-    """创建表结构"""
-    # 列定义（处理主键）
-    col_defs = []
-    for col in columns:
-        if col in primary_keys:
-            col_defs.append(f"{col} TEXT PRIMARY KEY")
-        else:
-            col_defs.append(f"{col} TEXT")
-
-    # 创建表
-    conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({', '.join(col_defs)})")
-
-    # 动态增加缺失的列
-    for col in columns:
-        try:
-            conn.execute(f"SELECT {col} FROM {table_name} LIMIT 1")
-        except sqlite3.OperationalError:
-            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {col} TEXT")
-    
-    # 创建索引
-    for col in set(indexed_columns) - set(primary_keys):
-        # conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_{col} ON {table_name}({col})")
-        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table_name}_{col} ON {table_name}({col})")
-        
-def create_table(conn, table_name, columns, primary_keys, indexed_columns):
-    """统一表创建逻辑"""
-    # 列定义处理
-    col_defs = [
-        f"{col} TEXT{' PRIMARY KEY' if col in primary_keys else ''}"
-        for col in columns
-    ]
-    
-    # 表创建
-    conn.execute(f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            {', '.join(col_defs)}
-        )
-    """)
-    
-    # 索引处理
-    for col in set(indexed_columns) - set(primary_keys):
-        conn.execute(f"""
-            CREATE INDEX IF NOT EXISTS idx_{table_name}_{col} 
-            ON {table_name}({col})
-        """)        
-
-def insert_data1(conn, table_name, data):
-    """插入数据前，确保表包含所有需要的列"""
-    # 获取表的所有列
-    cursor = conn.execute(f"PRAGMA table_info({table_name})")
-    existing_columns = [row[1] for row in cursor.fetchall()]
-    
-    # 获取数据中所有的列
-    data_columns = list(data.keys())
-    
-    # 如果数据中包含未存在的列，则添加这些列
-    for col in data_columns:
-        if col not in existing_columns:
-            conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {col} TEXT")
-    
-    # 插入数据
-    cols = ', '.join(data.keys())
-    placeholders = ', '.join(['?'] * len(data))
-    query = f"INSERT OR REPLACE INTO {table_name} ({cols}) VALUES ({placeholders})"
-    conn.execute(query, tuple(data.values()))
-    
-def insert_data(conn, table_name, data):
-    """优化后的插入逻辑"""
-    # 批量获取现有列
-    cursor = conn.execute(f"PRAGMA table_info({table_name})")
-    existing_columns = {row[1] for row in cursor.fetchall()}
-    
-    # 批量添加缺失列
-    missing = [col for col in data.keys() if col not in existing_columns]
-    for col in missing:
-        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {col} TEXT")
-    
-    # 执行插入
-    query = f"""
-        INSERT OR REPLACE INTO {table_name} 
-        ({', '.join(data.keys())}) 
-        VALUES ({', '.join(['?']*len(data))})
-    """
-    conn.execute(query, tuple(data.values()))    
-    
-def batch_insert_data(conn, table_name, data_list):
-    """批量插入优化"""
-    try:
-        conn.execute("BEGIN TRANSACTION")
-        for data in data_list:
-            insert_data(conn, table_name, data)
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        raise    
-    
-    
-def restore_data_with_filter(data):
-    """递归还原数据，并过滤掉值为null的键"""
-    if isinstance(data, dict):
-        # 遍历字典并过滤掉值为null的字段
-        return {k: restore_data_with_filter(v) for k, v in data.items() if v is not None}
-    elif isinstance(data, list):
-        # 对列表进行递归处理
-        return [restore_data_with_filter(item) for item in data]
-    else:
-        # 其他类型的数据直接返回
-        return data    
-    
+        restored_data = DatabaseOperations.restore_data_with_filter(page_data)            
+        print(json.dumps(restored_data, indent=2))
 
 # 测试代码
 if __name__ == "__main__":
